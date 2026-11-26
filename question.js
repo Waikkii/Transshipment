@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         自动填写
 // @namespace    http://tampermonkey.net/
-// @version      2.1.0
+// @version      2.2.0
 // @description  记录手填问卷答案，按题回填，支持本地备份与恢复
 // @author       You
 // @match        *://*/*
@@ -220,9 +220,25 @@
         return counts;
     }
 
-    function setStatus(message) {
+    function clearStatus(target) {
+        clearTimeout(target.statusTimer);
+        target.status.textContent = '';
+        target.dismiss.hidden = true;
+        delete target.feedback.dataset.kind;
+    }
+
+    function setStatus(message, kind = 'notice', duration = 0) {
         if (!panel?.host.isConnected) return false;
-        panel.status.textContent = message;
+        const target = panel;
+        const current = target.feedback.dataset.kind;
+        if (kind === 'quiet' && (current === 'warning' || current === 'error' ||
+            current === 'notice' || current === 'progress')) return true;
+
+        clearTimeout(target.statusTimer);
+        target.feedback.dataset.kind = kind;
+        if (target.status.textContent !== message) target.status.textContent = message;
+        target.dismiss.hidden = Boolean(duration) || kind === 'progress';
+        if (duration) target.statusTimer = setTimeout(() => clearStatus(target), duration);
         return true;
     }
 
@@ -235,9 +251,9 @@
         const answer = (current?.key === edit.key ? snapshot(current) : null) ?? edit.answer;
         if (answer === null) return;
         try {
-            if (saveAnswer(edit.key, answer)) setStatus('已记录手填答案');
+            if (saveAnswer(edit.key, answer)) setStatus('已记录', 'quiet', 2200);
         } catch {
-            setStatus('无法保存答案，请检查脚本存储');
+            setStatus('保存失败，请检查油猴存储。', 'error');
         }
     }
 
@@ -427,9 +443,12 @@
         flushEdits();
         running = true;
         stopped = false;
+        const focusStop = panel.host.shadowRoot.activeElement === panel.fill;
+        panel.toggleBackup(false);
+        panel.stop.hidden = false;
         panel.fill.disabled = true;
-        panel.stop.disabled = false;
-        setStatus('正在填写');
+        if (focusStop) panel.stop.focus({ preventScroll: true });
+        setStatus('正在填写…', 'progress');
         const attempted = new Set();
         let filled = 0;
         let failed = 0;
@@ -460,68 +479,269 @@
                 }
                 activeQuestion = null;
             }
-            const result = '已填写 ' + filled + ' 题' +
-                (failed ? '，有 ' + failed + ' 题需要检查' : '');
-            setStatus(stopped ? '已停止，' + result : result);
+            const result = !stopped && !filled && !failed ? '没有可填写的题目' :
+                (stopped ? '已停止，' : '') + '已填写 ' + filled + ' 题' +
+                (failed ? '，' + failed + ' 题需检查' : '');
+            setStatus(result, failed ? 'warning' : 'success');
         } catch {
-            setStatus('填写中断，请检查当前问卷');
+            setStatus('填写中断，请检查当前问卷。', 'error');
         } finally {
             activeQuestion = null;
             running = false;
             panel.fill.disabled = false;
-            panel.stop.disabled = true;
+            if (panel.host.shadowRoot.activeElement === panel.stop) panel.fill.focus({ preventScroll: true });
+            panel.stop.hidden = true;
         }
     }
+
+    const panelCss = `
+        :host {
+            all: initial;
+            position: fixed;
+            inset-block-start: max(14px, env(safe-area-inset-top));
+            inset-inline-end: max(14px, env(safe-area-inset-right));
+            z-index: 99999;
+            font: 13px/1.4 system-ui, "Microsoft YaHei", sans-serif;
+            color: var(--ink);
+            --surface: #fff;
+            --ink: #172238;
+            --muted: #495972;
+            --border: #dce4f0;
+            --hover: #eef3fa;
+            --primary: #244ed6;
+            --primary-hover: #1d42bf;
+            --focus: #4269ea;
+            --good: #147053;
+            --warn: #8c4e06;
+            --bad: #a22b38;
+            --shadow: 0 8px 24px #152d511c, 0 2px 6px #152d5112;
+        }
+
+        *, *::before, *::after { box-sizing: border-box; }
+        [hidden] { display: none !important; }
+        button {
+            appearance: none;
+            display: inline-flex;
+            align-items: center;
+            justify-content: center;
+            gap: 6px;
+            min-block-size: 34px;
+            padding: 0 10px;
+            border: 0;
+            border-radius: 8px;
+            color: var(--muted);
+            background: transparent;
+            font: inherit;
+            font-weight: 600;
+            white-space: nowrap;
+            cursor: pointer;
+        }
+        button:hover { background: var(--hover); color: var(--ink); }
+        button:focus-visible { outline: 2px solid var(--focus); outline-offset: 2px; }
+        button:disabled { cursor: default; }
+
+        .bar, .backup-menu, .feedback[data-kind] {
+            border: 1px solid var(--border);
+            background: var(--surface);
+            box-shadow: var(--shadow);
+        }
+        .bar {
+            display: flex;
+            align-items: center;
+            gap: 3px;
+            padding: 4px;
+            border-radius: 13px;
+        }
+        .fill {
+            padding-inline: 13px;
+            color: #fff;
+            background: var(--primary);
+        }
+        .fill:not(:disabled):hover { color: #fff; background: var(--primary-hover); }
+        .fill:disabled { color: var(--muted); background: var(--hover); }
+        .backup::after {
+            content: "";
+            inline-size: 6px;
+            block-size: 6px;
+            border: solid currentColor;
+            border-width: 0 1.5px 1.5px 0;
+            transform: translateY(-1px) rotate(45deg);
+        }
+        .backup[aria-expanded="true"] { color: var(--ink); background: var(--hover); }
+        .backup[aria-expanded="true"]::after { transform: translateY(2px) rotate(225deg); }
+
+        .below {
+            position: absolute;
+            inset-block-start: calc(100% + 8px);
+            inset-inline-end: 0;
+            display: grid;
+            justify-items: end;
+            gap: 8px;
+            inline-size: max-content;
+            max-inline-size: min(280px, calc(100vw - 28px));
+            pointer-events: none;
+        }
+        .backup-menu {
+            display: grid;
+            min-inline-size: 108px;
+            padding: 4px;
+            border-radius: 10px;
+            pointer-events: auto;
+        }
+        .backup-menu button { justify-content: flex-start; }
+        .feedback[data-kind] {
+            display: flex;
+            align-items: flex-start;
+            gap: 8px;
+            max-inline-size: 100%;
+            padding: 9px 10px;
+            border-radius: 11px;
+        }
+        .feedback[data-kind]::before {
+            content: "";
+            flex: 0 0 7px;
+            block-size: 7px;
+            margin-block-start: 6px;
+            border-radius: 50%;
+            background: var(--indicator, var(--focus));
+        }
+        .feedback[data-kind="success"], .feedback[data-kind="quiet"] { --indicator: var(--good); }
+        .feedback[data-kind="warning"] { --indicator: var(--warn); }
+        .feedback[data-kind="error"] { --indicator: var(--bad); }
+        .feedback[data-kind="progress"]::before {
+            flex-basis: 10px;
+            block-size: 10px;
+            margin-block-start: 4px;
+            border: 1.5px solid var(--focus);
+            border-inline-end-color: transparent;
+            background: transparent;
+            animation: spin .8s linear infinite;
+        }
+        .message { min-inline-size: 0; overflow-wrap: anywhere; white-space: pre-line; }
+        .dismiss {
+            min-block-size: 24px;
+            inline-size: 24px;
+            padding: 0;
+            margin-block: -3px;
+            margin-inline-end: -4px;
+            font-size: 17px;
+            font-weight: 400;
+            pointer-events: auto;
+        }
+        @keyframes spin { to { transform: rotate(360deg); } }
+        @media (prefers-reduced-motion: reduce) {
+            .feedback[data-kind="progress"]::before { animation: none; }
+        }
+        @media (prefers-color-scheme: dark) {
+            :host {
+                --surface: #182235;
+                --ink: #f0f4ff;
+                --muted: #c2cde2;
+                --border: #34445d;
+                --hover: #26354d;
+                --primary: #3159df;
+                --primary-hover: #244bc9;
+                --focus: #9ab3ff;
+                --good: #73d3b0;
+                --warn: #f7be73;
+                --bad: #ffa0a9;
+                --shadow: 0 8px 24px #02061766, 0 2px 6px #02061744;
+            }
+        }
+    `;
 
     function mountPanel() {
         if (panel?.host.isConnected || !document.body || !document.querySelector(QUESTION) ||
             !document.querySelector(QUESTION + ' .original_subject, ' + QUESTION + ' .el-form-item__label')) return;
         const host = document.createElement('div');
         host.id = 'auto-fill-panel';
-        host.style.cssText = 'position:fixed;top:20px;right:20px;z-index:99999';
         const root = host.attachShadow({ mode: 'open' });
+        if ('adoptedStyleSheets' in root && typeof CSSStyleSheet.prototype.replaceSync === 'function') {
+            const style = new CSSStyleSheet();
+            style.replaceSync(panelCss);
+            root.adoptedStyleSheets = [style];
+        } else {
+            const style = document.createElement('style');
+            style.textContent = panelCss;
+            root.append(style);
+        }
+
         const bar = document.createElement('div');
-        bar.style.cssText = 'display:flex;align-items:center;gap:10px;padding:10px 12px;' +
-            'border:1px solid #409eff;border-radius:8px;background:#fff;color:#233045;' +
-            'box-shadow:0 3px 12px #0002;font:14px sans-serif';
-        const fillButton = document.createElement('button');
-        fillButton.type = 'button';
-        fillButton.textContent = '填写已记录答案';
-        fillButton.addEventListener('click', fill);
-        const stopButton = document.createElement('button');
-        stopButton.type = 'button';
-        stopButton.textContent = '停止';
-        stopButton.disabled = true;
-        stopButton.addEventListener('click', () => { stopped = true; });
+        bar.className = 'bar';
+        bar.setAttribute('role', 'group');
+        bar.setAttribute('aria-label', '问卷助手');
+        const below = document.createElement('div');
+        below.className = 'below';
+
+        function makeButton(text, className, onClick) {
+            const button = document.createElement('button');
+            button.type = 'button';
+            button.textContent = text;
+            button.className = className;
+            button.addEventListener('click', onClick);
+            return button;
+        }
+
+        const fillButton = makeButton('填写答案', 'fill', fill);
+        const stopButton = makeButton('停止', 'stop', () => { stopped = true; });
+        stopButton.hidden = !running;
+        fillButton.disabled = running;
+
+        const feedback = document.createElement('div');
+        feedback.className = 'feedback';
         const status = document.createElement('span');
+        status.className = 'message';
         status.setAttribute('role', 'status');
-        status.textContent = '手填时自动记录';
-        const backup = document.createElement('details');
-        const summary = document.createElement('summary');
-        summary.textContent = '备份';
-        const exportButton = document.createElement('button');
-        exportButton.type = 'button';
-        exportButton.textContent = '导出';
-        exportButton.addEventListener('click', () => {
-            flushEdits();
-            exportAnswerBackup(setStatus);
+        const dismiss = makeButton('×', 'dismiss', () => {
+            (fillButton.disabled ? stopButton : fillButton).focus({ preventScroll: true });
+            clearStatus(mounted);
         });
-        const importButton = document.createElement('button');
-        importButton.type = 'button';
-        importButton.textContent = '导入';
-        importButton.addEventListener('click', () => {
+        dismiss.setAttribute('aria-label', '关闭提醒');
+        dismiss.hidden = true;
+        feedback.append(status, dismiss);
+
+        const backupMenu = document.createElement('div');
+        backupMenu.className = 'backup-menu';
+        backupMenu.id = 'question-backup-menu';
+        backupMenu.hidden = true;
+        const backupButton = makeButton('备份', 'backup', () => toggleBackup(backupMenu.hidden));
+        backupButton.setAttribute('aria-expanded', 'false');
+        backupButton.setAttribute('aria-controls', backupMenu.id);
+
+        function toggleBackup(open, restoreFocus = false) {
+            backupMenu.hidden = !open;
+            backupButton.setAttribute('aria-expanded', String(open));
+            if (restoreFocus) backupButton.focus({ preventScroll: true });
+        }
+        function runBackupAction(action) {
+            toggleBackup(false, true);
             flushEdits();
-            chooseAnswerBackup(setStatus);
+            action(setStatus);
+        }
+
+        backupMenu.append(
+            makeButton('导出', '', () => runBackupAction(exportAnswerBackup)),
+            makeButton('导入', '', () => runBackupAction(chooseAnswerBackup))
+        );
+        root.addEventListener('keydown', event => {
+            if (event.key === 'Escape' && !backupMenu.hidden) {
+                event.stopPropagation();
+                toggleBackup(false, true);
+            }
         });
-        backup.append(summary, exportButton, importButton);
-        bar.append(fillButton, stopButton, backup, status);
-        root.append(bar);
+        bar.append(fillButton, stopButton, backupButton);
+        below.append(backupMenu, feedback);
+        root.append(bar, below);
+        const mounted = { host, fill: fillButton, stop: stopButton, status, feedback, dismiss, toggleBackup };
         document.body.append(host);
-        panel = { host, fill: fillButton, stop: stopButton, status };
+        panel = mounted;
         scheduleAutomaticBackup();
     }
 
     function stopForManualEdit(event) {
+        if (event.type === 'pointerdown' && panel && !event.composedPath().includes(panel.host)) {
+            panel.toggleBackup(false);
+        }
         if (running && event.isTrusted && event.target instanceof Element && event.target.closest(QUESTION)) {
             stopped = true;
         }
@@ -653,7 +873,7 @@
         try {
             const backup = createAnswerBackup();
             if (!backup.count) {
-                setStatus('暂无可备份的答案。');
+                setStatus('暂无可备份的答案。', 'notice');
                 return;
             }
 
@@ -665,9 +885,9 @@
             setTimeout(() => URL.revokeObjectURL(url), 30_000);
 
             GM_setValue(lastManualBackupKey, Date.now());
-            setStatus(`已请求下载 ${backup.count} 条记录，请在浏览器下载列表确认文件已保存。`);
+            setStatus(`已请求下载 ${backup.count} 条记录，请检查下载列表。`);
         } catch {
-            setStatus('无法导出答案，请重试。');
+            setStatus('导出失败，请重试。', 'error');
         }
     }
 
@@ -679,11 +899,11 @@
             if (backup?.format === legacyBackupFormat) {
                 if (backup.version !== 1 || !isLegacyRules(backup.records)) throw new Error();
                 if (!panel?.host.isConnected || !isSiteOrigin(origin)) {
-                    setStatus('请在要使用旧答案的问卷页面导入。');
+                    setStatus('请在要使用旧答案的问卷页面导入。', 'warning');
                     return;
                 }
                 if (mergeLegacyRules(origin, backup.records, true)) markAnswerChanges();
-                setStatus(`已导入 ${backup.records.length} 条旧规则。点击「填写已记录答案」进行匹配。`);
+                setStatus(`已导入 ${backup.records.length} 条旧规则。点「填写答案」回填。`);
                 return;
             }
             if (backup?.format !== answerBackupFormat || backup.version !== 1 || !Array.isArray(backup.records)) {
@@ -703,7 +923,7 @@
                 !legacy.every(entry => isSiteOrigin(entry?.site) && isLegacyRules(entry.rules)) ||
                 new Set(legacy.map(entry => entry.site)).size !== legacy.length) throw new Error();
         } catch {
-            setStatus('无法读取这份备份，请选择脚本导出的有效 JSON 文件。');
+            setStatus('备份文件无效，请选择脚本导出的 JSON。', 'error');
             return;
         }
 
@@ -722,13 +942,13 @@
             }
         } catch {
             if (imported || legacyChanged) markAnswerChanges();
-            setStatus(`已导入 ${imported} 条，存储写入中断。可重新导入同一份文件继续。`);
+            setStatus(`导入中断，已保存 ${imported} 条。请重新导入同一文件。`, 'warning');
             return;
         }
 
         if (imported || legacyChanged) markAnswerChanges();
         const restored = legacy.length ? ` 已合并 ${legacy.length} 个网站的旧规则。` : '';
-        setStatus(`已导入 ${imported} 条答案，跳过 ${records.length - imported} 条已有或更新的记录。${restored}`);
+        setStatus(`已导入 ${imported} 条，保留本地 ${records.length - imported} 条。${restored}`, 'success');
     }
 
     function chooseAnswerBackup(setStatus) {
@@ -747,7 +967,7 @@
                 input.click();
             }
         } catch {
-            setStatus('浏览器未打开文件选择器，请在问卷页面点击导入。');
+            setStatus('文件选择器未打开，请在问卷面板点「导入」。', 'warning');
         }
     }
 
@@ -777,7 +997,7 @@
 
         lastBackupAttempt = Date.now();
         if (!supportsAutomaticBackup()) {
-            setStatus('自动备份需要油猴的浏览器下载模式。也可手动导出。');
+            setStatus('请开启油猴的浏览器下载模式，或手动导出。', 'warning');
             return;
         }
 
@@ -786,10 +1006,10 @@
             if (saved) {
                 GM_setValue(lastAutomaticBackupKey, Date.now());
                 GM_setValue(backedUpChangeKey, Math.max(change, GM_getValue(backedUpChangeKey, 0)));
-                setStatus('自动备份已下载，可在浏览器下载列表查看。');
+                setStatus('自动备份已下载', 'quiet', 3500);
                 scheduleAutomaticBackup();
             } else {
-                setStatus('自动备份未完成。请检查油猴下载权限和 JSON 白名单，或手动导出。');
+                setStatus('自动备份失败。请检查下载权限和 JSON 白名单，或手动导出。', 'warning');
                 if (GM_getValue(lastChangeKey, 0) > change) scheduleAutomaticBackup();
             }
         };
@@ -813,8 +1033,8 @@
     }
 
     function registerBackupMenus() {
-        const menuStatus = message => {
-            if (!setStatus(message)) window.alert(message);
+        const menuStatus = (message, kind) => {
+            if (!setStatus(message, kind)) window.alert(message);
         };
         GM_registerMenuCommand('导出答案 JSON', () => {
             flushEdits();
@@ -827,17 +1047,17 @@
         GM_registerMenuCommand('切换自动文件备份', () => {
             const enabled = GM_getValue(automaticBackupKey, false);
             if (!enabled && !supportsAutomaticBackup()) {
-                menuStatus('自动备份需要油猴的浏览器下载模式。也可手动导出。');
+                menuStatus('请开启油猴的浏览器下载模式，或手动导出。', 'warning');
                 return;
             }
             GM_setValue(automaticBackupKey, !enabled);
             if (enabled) {
                 clearTimeout(automaticBackupTimer);
                 automaticBackupTimer = undefined;
-                menuStatus('已关闭自动文件备份。');
+                menuStatus('已关闭自动备份', 'success');
             } else {
                 scheduleAutomaticBackup();
-                menuStatus('已开启自动文件备份。页面打开且有变化时，会将 JSON 下载到本机。');
+                menuStatus('已开启自动备份', 'success');
             }
         });
         GM_registerMenuCommand('查看答案备份状态', () => {
@@ -845,7 +1065,7 @@
             const lastAutomatic = GM_getValue(lastAutomaticBackupKey, 0);
             const lastManual = GM_getValue(lastManualBackupKey, 0);
             const displayTime = (time) => time ? new Date(time).toLocaleString() : '无';
-            menuStatus(`自动备份${automatic}。最近自动下载 ${displayTime(lastAutomatic)}。最近手动导出请求 ${displayTime(lastManual)}。`);
+            menuStatus(`自动备份：${automatic}\n最近自动下载：${displayTime(lastAutomatic)}\n最近手动导出请求：${displayTime(lastManual)}`);
         });
     }
 

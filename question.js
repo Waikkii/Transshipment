@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         自动填写
 // @namespace    http://tampermonkey.net/
-// @version      2.2.0
+// @version      2.2.1
 // @description  记录手填问卷答案，按题回填，支持本地备份与恢复
 // @author       You
 // @match        *://*/*
@@ -498,19 +498,23 @@
         :host {
             all: initial;
             position: fixed;
-            inset-block-start: max(14px, env(safe-area-inset-top));
-            inset-inline-end: max(14px, env(safe-area-inset-right));
+            inset-block-start: max(var(--edge), env(safe-area-inset-top));
+            inset-inline-end: max(var(--edge), env(safe-area-inset-right));
             z-index: 99999;
             font: 13px/1.4 system-ui, "Microsoft YaHei", sans-serif;
             color: var(--ink);
+            --edge: clamp(12px, 3vw, 20px);
             --surface: #fff;
             --ink: #172238;
             --muted: #495972;
             --border: #dce4f0;
+            --toolbar-border: #409eff;
             --hover: #eef3fa;
-            --primary: #244ed6;
-            --primary-hover: #1d42bf;
-            --focus: #4269ea;
+            --primary: #1665bd;
+            --primary-hover: #1056a5;
+            --stop: #b42335;
+            --stop-hover: #991b2b;
+            --focus: #176ac6;
             --good: #147053;
             --warn: #8c4e06;
             --bad: #a22b38;
@@ -528,7 +532,7 @@
             min-block-size: 34px;
             padding: 0 10px;
             border: 0;
-            border-radius: 8px;
+            border-radius: 6px;
             color: var(--muted);
             background: transparent;
             font: inherit;
@@ -548,9 +552,10 @@
         .bar {
             display: flex;
             align-items: center;
-            gap: 3px;
+            gap: 4px;
             padding: 4px;
-            border-radius: 13px;
+            border: 2px solid var(--toolbar-border);
+            border-radius: 9px;
         }
         .fill {
             padding-inline: 13px;
@@ -559,6 +564,8 @@
         }
         .fill:not(:disabled):hover { color: #fff; background: var(--primary-hover); }
         .fill:disabled { color: var(--muted); background: var(--hover); }
+        .stop { color: #fff; background: var(--stop); }
+        .stop:hover { color: #fff; background: var(--stop-hover); }
         .backup::after {
             content: "";
             inline-size: 6px;
@@ -578,7 +585,7 @@
             justify-items: end;
             gap: 8px;
             inline-size: max-content;
-            max-inline-size: min(280px, calc(100vw - 28px));
+            max-inline-size: min(280px, calc(100vw - 2 * var(--edge)));
             pointer-events: none;
         }
         .backup-menu {
@@ -638,9 +645,10 @@
                 --ink: #f0f4ff;
                 --muted: #c2cde2;
                 --border: #34445d;
+                --toolbar-border: #4d90da;
                 --hover: #26354d;
-                --primary: #3159df;
-                --primary-hover: #244bc9;
+                --primary: #1f63b6;
+                --primary-hover: #2157a2;
                 --focus: #9ab3ff;
                 --good: #73d3b0;
                 --warn: #f7be73;
@@ -682,7 +690,7 @@
             return button;
         }
 
-        const fillButton = makeButton('填写答案', 'fill', fill);
+        const fillButton = makeButton('开始填写', 'fill', fill);
         const stopButton = makeButton('停止', 'stop', () => { stopped = true; });
         stopButton.hidden = !running;
         fillButton.disabled = running;
@@ -903,7 +911,7 @@
                     return;
                 }
                 if (mergeLegacyRules(origin, backup.records, true)) markAnswerChanges();
-                setStatus(`已导入 ${backup.records.length} 条旧规则。点「填写答案」回填。`);
+                setStatus(`已导入 ${backup.records.length} 条旧规则。点「开始填写」回填。`);
                 return;
             }
             if (backup?.format !== answerBackupFormat || backup.version !== 1 || !Array.isArray(backup.records)) {
